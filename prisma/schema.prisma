@@ -1,0 +1,321 @@
+// =============================================================================
+// OneButton - Prisma Schema
+// Database: PostgreSQL on Render
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// User Model - Core user entity
+// =============================================================================
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String?  // Nullable for Auth0 users
+
+  // Auth0 integration
+  auth0Id   String?  @unique @map("auth0_id")
+
+  // Profile information
+  firstName String?  @map("first_name")
+  lastName  String?  @map("last_name")
+  avatarUrl String?  @map("avatar_url")
+
+  // Stripe integration
+  stripeCustomerId String? @unique @map("stripe_customer_id")
+
+  // Subscription information
+  subscriptionTier   SubscriptionTier @default(FREE) @map("subscription_tier")
+  subscriptionStatus String?          @map("subscription_status") // active, canceled, past_due
+  subscriptionId     String?          @unique @map("subscription_id")
+
+  // Account status
+  isActive     Boolean @default(true) @map("is_active")
+  isVerified   Boolean @default(false) @map("is_verified")
+  verifiedAt   DateTime? @map("verified_at")
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  lastLoginAt DateTime? @map("last_login_at")
+
+  // Relations
+  settings        UserSettings?
+  meetings        Meeting[]
+  integrations    Integration[]
+  auditLogs       AuditLog[]
+
+  @@map("users")
+  @@index([email])
+  @@index([auth0Id])
+  @@index([stripeCustomerId])
+}
+
+// =============================================================================
+// User Settings Model
+// =============================================================================
+model UserSettings {
+  id     String @id @default(uuid())
+  userId String @unique @map("user_id")
+
+  // General preferences
+  language           String  @default("en")
+  timezone           String  @default("UTC")
+  dateFormat         String  @default("MM/DD/YYYY") @map("date_format")
+
+  // Notification preferences
+  emailNotifications Boolean @default(true) @map("email_notifications")
+  slackNotifications Boolean @default(false) @map("slack_notifications")
+
+  // Meeting preferences
+  autoStartTranscription Boolean @default(true) @map("auto_start_transcription")
+  defaultMeetingPrivacy  String  @default("private") @map("default_meeting_privacy") // private, team, public
+
+  // Audio preferences
+  audioQuality       String  @default("high") @map("audio_quality") // low, medium, high
+  autoSaveRecording  Boolean @default(true) @map("auto_save_recording")
+
+  // Transcription preferences
+  transcriptionModel String  @default("nova-2") @map("transcription_model")
+  enablePunctuation  Boolean @default(true) @map("enable_punctuation")
+  enableDiarization  Boolean @default(true) @map("enable_diarization")
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+  @@index([userId])
+}
+
+// =============================================================================
+// Meeting Model
+// =============================================================================
+model Meeting {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+
+  // Meeting information
+  title       String
+  description String?
+  startTime   DateTime @map("start_time")
+  endTime     DateTime? @map("end_time")
+  duration    Int?     // Duration in seconds
+
+  // Meeting status
+  status      MeetingStatus @default(SCHEDULED)
+
+  // Transcription
+  transcriptionId String? @unique @map("transcription_id")
+  transcript      String? @db.Text
+  summary         String? @db.Text
+  actionItems     Json?   @map("action_items") // Array of action items
+
+  // Audio storage
+  audioUrl        String? @map("audio_url")
+  audioSize       Int?    @map("audio_size") // Size in bytes
+  audioDuration   Int?    @map("audio_duration") // Duration in seconds
+
+  // Privacy and sharing
+  privacy         String  @default("private") // private, team, public
+  shareToken      String? @unique @map("share_token")
+
+  // Metadata
+  participants    Json?   // Array of participant objects
+  metadata        Json?   // Additional metadata
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at") // Soft delete
+
+  // Relations
+  user            User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries      Delivery[]
+
+  @@map("meetings")
+  @@index([userId])
+  @@index([status])
+  @@index([startTime])
+  @@index([shareToken])
+}
+
+// =============================================================================
+// Delivery Model - Minutes delivery tracking
+// =============================================================================
+model Delivery {
+  id        String   @id @default(uuid())
+  meetingId String   @map("meeting_id")
+
+  // Delivery information
+  type      DeliveryType // EMAIL, SLACK
+  recipient String       // Email address or Slack channel ID
+  status    DeliveryStatus @default(PENDING)
+
+  // Delivery details
+  subject   String?
+  content   String?  @db.Text
+
+  // Error tracking
+  errorMessage String? @map("error_message")
+  retryCount   Int     @default(0) @map("retry_count")
+
+  // Timestamps
+  sentAt    DateTime? @map("sent_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@map("deliveries")
+  @@index([meetingId])
+  @@index([status])
+  @@index([type])
+}
+
+// =============================================================================
+// Integration Model - Third-party integrations (Slack, etc.)
+// =============================================================================
+model Integration {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  // Integration information
+  type   IntegrationType // SLACK, GOOGLE_CALENDAR, MICROSOFT_TEAMS, etc.
+  name   String
+
+  // Integration status
+  isActive Boolean @default(true) @map("is_active")
+
+  // Integration credentials (encrypted)
+  accessToken  String? @map("access_token")
+  refreshToken String? @map("refresh_token")
+  expiresAt    DateTime? @map("expires_at")
+
+  // Integration configuration
+  config Json? // Integration-specific configuration
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("integrations")
+  @@index([userId])
+  @@index([type])
+}
+
+// =============================================================================
+// Audit Log Model - Security and compliance tracking
+// =============================================================================
+model AuditLog {
+  id     String @id @default(uuid())
+  userId String? @map("user_id")
+
+  // Action information
+  action      String // LOGIN, LOGOUT, CREATE_MEETING, DELETE_MEETING, etc.
+  resource    String? // Resource type (meeting, user, etc.)
+  resourceId  String? @map("resource_id")
+
+  // Request information
+  ipAddress   String? @map("ip_address")
+  userAgent   String? @map("user_agent")
+
+  // Result
+  success     Boolean
+  errorMessage String? @map("error_message")
+
+  // Additional data
+  metadata    Json?
+
+  // Timestamp
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// Webhook Event Model - Stripe webhook events
+// =============================================================================
+model WebhookEvent {
+  id String @id @default(uuid())
+
+  // Webhook information
+  provider String // stripe, deepgram, etc.
+  eventType String @map("event_type")
+  eventId  String @unique @map("event_id")
+
+  // Payload
+  payload  Json
+
+  // Processing status
+  processed Boolean @default(false)
+  processedAt DateTime? @map("processed_at")
+
+  // Error tracking
+  errorMessage String? @map("error_message")
+  retryCount   Int @default(0) @map("retry_count")
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("webhook_events")
+  @@index([provider])
+  @@index([eventType])
+  @@index([processed])
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum SubscriptionTier {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum DeliveryType {
+  EMAIL
+  SLACK
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum IntegrationType {
+  SLACK
+  GOOGLE_CALENDAR
+  MICROSOFT_TEAMS
+  ZOOM
+}
